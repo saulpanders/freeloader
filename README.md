@@ -4,6 +4,7 @@
 ### Info:
 Tool to experiment with implementing various injection techniques
 - currently supports DLLs and PIC shellcode (PE tbd soon)
+- eventually would like to add support for reflection as well
 - option for local or remote process injection
 - not opsec safe - makes use of both CreateRemoteThread and RWX pages in memory
 
